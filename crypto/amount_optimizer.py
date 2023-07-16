@@ -111,19 +111,18 @@ class AmtOptimizer(Model):
             inter = trade[0].split('_')[0] != trade[1].split('_')[0]
 
             if i >= 1:
-                if not reverse:
-                    self.add_constraint(self.sum(self.z[i, :]) <= prev_amt)
-                else:
+                if reverse:
                     self.add_constraint(self.dot(self.z[i, :], self.price_matrix[i, :]) <= prev_amt)
 
+                else:
+                    self.add_constraint(self.sum(self.z[i, :]) <= prev_amt)
             if inter:
                 withdraw_fee = self.PathOptimizer.withdrawal_fee[trade[0]]['coin_fee']
                 prev_amt = self.sum(self.z[i, :]) - withdraw_fee
+            elif reverse:
+                prev_amt = self.sum(self.z[i, :]) * (1 - self.path_commission[i])
             else:
-                if not reverse:
-                    prev_amt = self.dot(self.z[i, :], self.price_matrix[i, :]) * (1 - self.path_commission[i])
-                else:
-                    prev_amt = self.sum(self.z[i, :]) * (1 - self.path_commission[i])
+                prev_amt = self.dot(self.z[i, :], self.price_matrix[i, :]) * (1 - self.path_commission[i])
         # 7. integer variables should all be larger than 0
         self.add_constraints(self.x[i, j] >= 0 for i in range(self.path_n) for j in range(self.orderbook_n))
 
@@ -131,7 +130,6 @@ class AmtOptimizer(Model):
         '''function to update the maximization objectie of the model'''
         end_first_exchange, _ = self.path[-1][0].split('_')
         end_sec_exchange, _ = self.path[-1][1].split('_')
-        end_reverse = self.reverse_list[-1]
         start_reverse = self.reverse_list[0]
         end_inter = end_first_exchange != end_sec_exchange
 
@@ -139,6 +137,7 @@ class AmtOptimizer(Model):
             withdraw_fee = self.PathOptimizer.withdrawal_fee[self.path[-1][0]]['coin_fee']
             get = self.sum(self.z[-1, :]) - withdraw_fee
         else:
+            end_reverse = self.reverse_list[-1]
             if not end_reverse:
                 get = self.dot(self.z[-1, :], self.price_matrix[-1, :]) * (1 - self.path_commission[-1])
             else:
@@ -174,11 +173,7 @@ class AmtOptimizer(Model):
             self.print_content = 'no workable solution'
         else:
             self.profit_unit = self.path[0][0]
-            self.print_content = 'Solution: {}, final profit: {} {}'.format(
-                self.trade_solution,
-                self.objective_value * self.amplifier,
-                self.profit_unit
-            )
+            self.print_content = f'Solution: {self.trade_solution}, final profit: {self.objective_value * self.amplifier} {self.profit_unit}'
         print(self.print_content)
 
     def get_pair_info(self):
@@ -200,7 +195,7 @@ class AmtOptimizer(Model):
         self.precision = {}
         for exc_name, exchange in self.PathOptimizer.exchanges.items():
             for pair, info in exchange.markets.items():
-                new_name = '/'.join(['{}_{}'.format(exc_name, i) for i in pair.split('/')])
+                new_name = '/'.join([f'{exc_name}_{i}' for i in pair.split('/')])
                 precision = info['precision'].get('amount')
                 if precision is None:
                     precision = self.default_precision
@@ -208,7 +203,7 @@ class AmtOptimizer(Model):
 
         # withdrawal precision (inter exchange trading)
         if self.PathOptimizer.inter_exchange_trading:
-            same_currency_maps = dict()
+            same_currency_maps = {}
             for i in self.PathOptimizer.currency_set:
                 short_name = i.split('_')[-1]
                 if short_name not in same_currency_maps:
@@ -219,8 +214,8 @@ class AmtOptimizer(Model):
             for currencies in same_currency_maps.values():
                 if len(currencies) >= 2:
                     for from_cur, to_cur in combinations(currencies, 2):
-                        self.precision['{}/{}'.format(from_cur, to_cur)] = 5
-                        self.precision['{}/{}'.format(to_cur, from_cur)] = 5
+                        self.precision[f'{from_cur}/{to_cur}'] = 5
+                        self.precision[f'{to_cur}/{from_cur}'] = 5
 
     def set_precision_matrix(self):
         '''set the shape (path_n, 1) precision matrix given the precision info'''
@@ -287,15 +282,13 @@ class AmtOptimizer(Model):
         sec_exchange, sec_cur = i[1].split('_')
 
         if first_exchange == sec_exchange:
-            pair = '{}/{}'.format(first_cur, sec_cur)
+            pair = f'{first_cur}/{sec_cur}'
             if pair not in self.pair_info[first_exchange]:
                 pair = '/'.join(pair.split('/')[::-1])
 
-            fetched_order_book = self.PathOptimizer.exchanges[first_exchange].fetch_order_book(pair)
+            return self.PathOptimizer.exchanges[first_exchange].fetch_order_book(pair)
         else:
-            fetched_order_book = None
-
-        return fetched_order_book
+            return None
 
     def path_order_book(self):
         '''function to transform the orderbook info retrieved from request to a usable format for the model'''
@@ -311,7 +304,7 @@ class AmtOptimizer(Model):
             sec_exchange, sec_cur = i[1].split('_')
 
             if first_exchange == sec_exchange:
-                pair = '{}/{}'.format(first_cur, sec_cur)
+                pair = f'{first_cur}/{sec_cur}'
                 if pair not in self.pair_info[first_exchange]:
                     reverse = True
 
@@ -323,13 +316,12 @@ class AmtOptimizer(Model):
                     orders = np.concatenate(
                         (asks[:, 0].reshape(-1, 1), np.cumsum(asks[:, 1], axis=0).reshape(-1, 1)),
                         axis=1)
-                    self.order_book[i]['orders'] = orders[:self.orderbook_n, :]
                 else:
                     bids = np.array(fetched_order_book['bids'])
                     orders = np.concatenate(
                         (bids[:, 0].reshape(-1, 1), np.cumsum(bids[:, 1], axis=0).reshape(-1, 1)),
                         axis=1)
-                    self.order_book[i]['orders'] = orders[:self.orderbook_n, :]
+                self.order_book[i]['orders'] = orders[:self.orderbook_n, :]
             else:
                 self.order_book[i]['reverse'] = reverse
                 order_book = np.tile(np.array([[1, 0]]), (self.orderbook_n, 1))
