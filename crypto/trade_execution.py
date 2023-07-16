@@ -62,12 +62,10 @@ class TradeExecutor:
         sec_exc = key[1].split('_')[0]
         if first_exc == sec_exc:
             order_info = self.intra_exc_trade(key, val)
-            succeed = self.wait_and_cancel(order_info, first_exc)
+            return self.wait_and_cancel(order_info, first_exc)
         else:
             self.inter_exc_trade(key, val)
-            succeed = True
-
-        return succeed
+            return True
 
     def intra_exc_trade(self, key, val):
         '''function to execute intra exchange trades'''
@@ -132,11 +130,9 @@ class TradeExecutor:
 
         if not closed:
             exchange.cancel_order(id, symbol)
-            succeed = False
+            return False
         else:
-            succeed = True
-
-        return succeed
+            return True
 
     @staticmethod
     def kucoin_transfer_to(to, exchange, amount, code):
@@ -148,9 +144,6 @@ class TradeExecutor:
                 main_id = i['id']
             elif i['currency'] == code and i['type'] == 'trade':
                 trade_id = i['id']
-            else:
-                pass
-
         if to == 'main':
             from_id, to_id = trade_id, main_id
         elif to == 'trade':

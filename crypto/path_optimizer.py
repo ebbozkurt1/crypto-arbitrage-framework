@@ -109,7 +109,7 @@ class PathOptimizer(Model):
         self.path = self._sort_list(path)
         self.obj = np.exp(self.objective_value) - 1
 
-        self.print_content = 'profit rate: {}, arbitrage path: {}'.format(self.obj, self.path)
+        self.print_content = f'profit rate: {self.obj}, arbitrage path: {self.path}'
         print(self.print_content)
         self.run_times += 1
 
@@ -134,7 +134,7 @@ class PathOptimizer(Model):
             if hasattr(self, key):
                 setattr(self, key, val)
             else:
-                raise ValueError('{} is not a valid attribute in model'.format(key))
+                raise ValueError(f'{key} is not a valid attribute in model')
 
     def init_currency_info(self):
         '''
@@ -144,16 +144,20 @@ class PathOptimizer(Model):
         self.currency_set = set()
         for exc_name, exchange in self.exchanges.items():
             exchange.load_markets()
-            currency_names = ['{}_{}'.format(exc_name, cur) for cur in exchange.currencies.keys()]
+            currency_names = [f'{exc_name}_{cur}' for cur in exchange.currencies.keys()]
             self.currency_set |= set(currency_names)
             if not self.include_fiat:
-                self.currency_set -= set(['{}_{}'.format(exc_name, fiat) for fiat in self.fiat_set])
+                self.currency_set -= {f'{exc_name}_{fiat}' for fiat in self.fiat_set}
 
         # currency_set should only contain coins that have reference usd price, other wise volume too small and volatile
-        coin_set = set([i.split('_')[-1] for i in self.currency_set])
+        coin_set = {i.split('_')[-1] for i in self.currency_set}
         coin_set = coin_set & (self.token_set | self.fiat_set)
         self.crypto_prices = get_crypto_prices(coin_set)
-        self.currency_set = set([i for i in self.currency_set if i.split('_')[-1] in self.crypto_prices.keys()])
+        self.currency_set = {
+            i
+            for i in self.currency_set
+            if i.split('_')[-1] in self.crypto_prices.keys()
+        }
 
     def update_transit_price(self):
         '''to update data of the transit_price_matrix'''
@@ -195,7 +199,7 @@ class PathOptimizer(Model):
         for exchange in self.exchanges:
             fee = get_withdrawal_fees(exchange, self.interex_trading_size)
             for currency in list(fee.keys()):
-                new_name = '{}_{}'.format(exchange, currency)
+                new_name = f'{exchange}_{currency}'
                 if new_name in self.currency_set:
                     fee[new_name] = fee.pop(currency)
                 else:
@@ -205,7 +209,7 @@ class PathOptimizer(Model):
     def update_balance(self):
         '''function to update the crypto-currency balance in all the exchanges'''
         self.balance_dict = {}
-        coin_set = set([i.split('_')[-1] for i in self.currency_set])
+        coin_set = {i.split('_')[-1] for i in self.currency_set}
 
         exc_name_list = list(self.exchanges.keys())
         thread_num = len(exc_name_list)
@@ -222,9 +226,9 @@ class PathOptimizer(Model):
                 if i in coin_set:
                     balance = exc_bal.pop(i)
                     usd_balance = balance * self.crypto_prices[i]['price']
-                    exc_bal['{}_{}'.format(exc_name, i)] = {
+                    exc_bal[f'{exc_name}_{i}'] = {
                         'balance': balance,
-                        'usd_balance': usd_balance
+                        'usd_balance': usd_balance,
                     }
                 else:
                     exc_bal.pop(i)
@@ -332,7 +336,7 @@ class PathOptimizer(Model):
         '''store all the possible inter-exchange trading path'''
         self.inter_convert_list = []
         if self.inter_exchange_trading:
-            same_currency_maps = dict()
+            same_currency_maps = {}
             for i in self.currency_set:
                 short_name = i.split('_')[-1]
                 if short_name not in same_currency_maps:
@@ -342,8 +346,10 @@ class PathOptimizer(Model):
 
             for currencies in same_currency_maps.values():
                 if len(currencies) >= 2:
-                    for from_cur, to_cur in combinations(currencies, 2):
-                        self.inter_convert_list.append((from_cur, to_cur))
+                    self.inter_convert_list.extend(
+                        (from_cur, to_cur)
+                        for from_cur, to_cur in combinations(currencies, 2)
+                    )
 
     def _sort_list(self, tuple_list):
         '''
@@ -381,7 +387,7 @@ class PathOptimizer(Model):
         for pair in list(exc_price.keys()):
             match = re.findall(r'[A-Z]+/[A-Z]+', pair)
             if len(match) == 1 and match[0] == pair and pair in self.exchanges[exc_name].markets:
-                new_name = '/'.join(['{}_{}'.format(exc_name, i) for i in pair.split('/')])
+                new_name = '/'.join([f'{exc_name}_{i}' for i in pair.split('/')])
                 exc_price[new_name] = exc_price.pop(pair)
             else:
                 exc_price.pop(pair)
@@ -393,29 +399,23 @@ class PathOptimizer(Model):
         constraint about required currencies
         the arbitrage path have to go by some certain nodes.
         '''
-        if self.consider_init_bal:
+        if not self.consider_init_bal:
+            return
+        coin_balance_list = [(key, val['usd_balance']) for key, val in self.balance_dict.items() if
+                             val['usd_balance'] >= self.min_trading_limit]
+        coin_balance_list = sorted(coin_balance_list, key=lambda x: x[-1], reverse=True)
+        required_currencies = [i[0] for i in coin_balance_list]
+        same = required_currencies == self.required_currencies
+        self.required_currencies = required_currencies
 
-            coin_balance_list = [(key, val['usd_balance']) for key, val in self.balance_dict.items() if
-                                 val['usd_balance'] >= self.min_trading_limit]
-            coin_balance_list = sorted(coin_balance_list, key=lambda x: x[-1], reverse=True)
-            required_currencies = [i[0] for i in coin_balance_list]
-            same = required_currencies == self.required_currencies
-            self.required_currencies = required_currencies
-
-            if self.required_currencies == []:
-                pass
-            elif same:
-                pass
-            else:
-                required_cur_index = [self.currency2index[i] for i in self.required_currencies]
-                constraint = self.get_constraint_by_name('changeable')
-                left = self.sum(self.x[required_cur_index, :])
-                right = 0.0000001 * self.sum(self.x)
-                if constraint is None:
-                    self.add_constraint(left >= right, ctname='changeable')  # small m
-                else:
-                    self.remove_constraint('changeable')
-                    self.add_constraint(left >= right, ctname='changeable')  # small m
+        if self.required_currencies != [] and not same:
+            required_cur_index = [self.currency2index[i] for i in self.required_currencies]
+            constraint = self.get_constraint_by_name('changeable')
+            left = self.sum(self.x[required_cur_index, :])
+            right = 0.0000001 * self.sum(self.x)
+            if constraint is not None:
+                self.remove_constraint('changeable')
+            self.add_constraint(left >= right, ctname='changeable')  # small m
 
     def get_var_location(self):
         '''
@@ -431,8 +431,8 @@ class PathOptimizer(Model):
                     former, latter = i.split('/')
                 except:
                     print(i)
-                from_cur = '{}_{}'.format(exc_name, former)
-                to_cur = '{}_{}'.format(exc_name, latter)
+                from_cur = f'{exc_name}_{former}'
+                to_cur = f'{exc_name}_{latter}'
                 if from_cur in self.currency2index and to_cur in self.currency2index:
                     from_index = self.currency2index[from_cur]
                     to_index = self.currency2index[to_cur]

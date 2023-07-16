@@ -14,34 +14,34 @@ def get_withdrawal_fees(exchange, trading_size=1000):
     will also calculate the withdrawal fee percentage based on an approximate trading size
     '''
 
+    response = requests.get(f'https://withdrawalfees.com/exchanges/{exchange}')
+    if not response.ok:
+        raise ValueError(
+            f'{exchange} is not an exchange supported by withdrawalfees.com'
+        )
+    tree = html.fromstring(response.content)
+
     withdrawal_fee = {}
-    response = requests.get('https://withdrawalfees.com/exchanges/{}'.format(exchange))
-    if response.ok:
-        tree = html.fromstring(response.content)
+    for ele in tree.xpath('//tbody//tr'):
+        coin_name = ele.xpath('.//div[@class="symbol"]/text()')[0]
+        usd_fee = ele.xpath('.//td[@class="withdrawalFee"]//div[@class="usd"]/text()')[0]
+        coin_fee = ele.xpath('.//td[@class="withdrawalFee"]//div[@class="fee"]/text()')[
+            0] if usd_fee != 'FREE' else 'FREE'
 
-        for ele in tree.xpath('//tbody//tr'):
-            coin_name = ele.xpath('.//div[@class="symbol"]/text()')[0]
-            usd_fee = ele.xpath('.//td[@class="withdrawalFee"]//div[@class="usd"]/text()')[0]
-            coin_fee = ele.xpath('.//td[@class="withdrawalFee"]//div[@class="fee"]/text()')[
-                0] if usd_fee != 'FREE' else 'FREE'
+        usd_fee = 0 if usd_fee == 'FREE' else float(re.findall(r'[0-9\.]+', usd_fee)[0])
+        coin_fee = 0 if coin_fee == 'FREE' else float(re.findall(r'[0-9\.]+', coin_fee)[0])
 
-            usd_fee = 0 if usd_fee == 'FREE' else float(re.findall(r'[0-9\.]+', usd_fee)[0])
-            coin_fee = 0 if coin_fee == 'FREE' else float(re.findall(r'[0-9\.]+', coin_fee)[0])
-
-            withdrawal_fee[coin_name] = {
-                'usd_fee': usd_fee,
-                'usd_rate': usd_fee / trading_size,
-                'coin_fee': coin_fee
-            }
-        return withdrawal_fee
-
-    else:
-        raise ValueError('{} is not an exchange supported by withdrawalfees.com'.format(exchange))
+        withdrawal_fee[coin_name] = {
+            'usd_fee': usd_fee,
+            'usd_rate': usd_fee / trading_size,
+            'coin_fee': coin_fee
+        }
+    return withdrawal_fee
 
 
 def get_crypto_prices(coin_set, convert='USD'):
     '''fetch crypto currencies price from coin market cap api'''
-    coin_set = set([i for i in coin_set if i.isalpha()])
+    coin_set = {i for i in coin_set if i.isalpha()}
     output = {}
     url = 'https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest'
     parameters = {
@@ -64,14 +64,13 @@ def get_crypto_prices(coin_set, convert='USD'):
                 'price': val['quote']['USD']['price'],
                 'cmc_rank': val['cmc_rank']
             }
+    elif response.status_code == 400:
+        msg = data['status']['error_message']
+        not_avail_coins = re.findall(r'[0-9A-Z]+', msg.split(':')[-1])
+        new_coin_set = coin_set - set(not_avail_coins)
+        output = get_crypto_prices(new_coin_set, convert)
     else:
-        if response.status_code == 400:
-            msg = data['status']['error_message']
-            not_avail_coins = re.findall(r'[0-9A-Z]+', msg.split(':')[-1])
-            new_coin_set = coin_set - set(not_avail_coins)
-            output = get_crypto_prices(new_coin_set, convert)
-        else:
-            raise ConnectionError
+        raise ConnectionError
 
     return output
 
@@ -109,9 +108,7 @@ def multiThread(func, List, threadNum):
     for t in line:
         t.join()
     outputList = sorted(outputList, key=lambda x: x[0])
-    outputList = [x[1] for x in outputList]
-
-    return outputList
+    return [x[1] for x in outputList]
 
 
 def killable_eachThread(func, num, partList, localVar, outputList, event):
@@ -148,9 +145,7 @@ def killable_multiThread(func, List, threadNum):
     for t in line:
         t.join()
     outputList = sorted(outputList, key=lambda x: x[0])
-    outputList = [x[1] for x in outputList]
-
-    return outputList
+    return [x[1] for x in outputList]
 
 
 def opp_and_solution_txt(path_optimizer, amt_optimizer):
@@ -159,9 +154,7 @@ def opp_and_solution_txt(path_optimizer, amt_optimizer):
     time = str(datetime.datetime.now().astimezone(tz))
     print1 = path_optimizer.print_content
     print2 = amt_optimizer.print_content if path_optimizer.have_opportunity() else ''
-    output = '-------------------------------\n{}\n{}\n{}\n\n'.format(time, print1, print2)
-
-    return output
+    return f'-------------------------------\n{time}\n{print1}\n{print2}\n\n'
 
 
 def save_to_file(output):
